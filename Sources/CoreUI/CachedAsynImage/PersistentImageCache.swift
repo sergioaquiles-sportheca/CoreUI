@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import CryptoKit
 
 
 /// A thread-safe (actor-isolated) image cache that persists items to disk and mirrors hot entries in memory.
@@ -138,23 +137,52 @@ public actor PersistentImageCache {
             try? fileManager.removeItem(at: fileURL)
             return nil
         }
-        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path())
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path)
         
         return try? Data(contentsOf: fileURL)
     }
     
-    /// Computes the on-disk file URL for a given key URL by hashing its absolute string (SHA-256) and preserving extension.
+    /// Builds a filesystem-safe URL for storing a cached image associated with a logical URL key.
+    ///
+    /// This helper derives a filename from the provided URL by:
+    /// - Taking the absolute string of the URL.
+    /// - Percent-encoding it with a restricted character set (alphanumerics plus "-._@").
+    /// - Truncating to a maximum length (200 characters) to avoid overly long filenames.
+    /// - Appending an extension based on the original URL's path extension (or "img" if absent).
+    ///
+    /// The resulting filename is placed inside the cache namespace directory (`dirURL`). While this
+    /// approach aims to be stable and safe for the filesystem, it is not cryptographically unique; two
+    /// extremely long or similar URLs could theoretically collide after truncation. For stronger
+    /// uniqueness guarantees, consider hashing the absolute string (e.g., SHA-256) and using the hash
+    /// as the filename.
+    ///
+    /// - Parameter url: The canonical URL that acts as the cache key.
+    /// - Returns: A `URL` pointing to the location on disk where the cached data should be stored.
     private func fileURLForKey(_ url: URL) -> URL {
-        let key = url.absoluteString
-        let digest = SHA256.hash(data: Data(key.utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        
+        let original = url.absoluteString
+        
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._@")
+        let encoded = original.addingPercentEncoding(withAllowedCharacters: allowed) ?? UUID().uuidString
+
+        let maxLength = 200
+        let base: String
+        if encoded.count > maxLength {
+            base = String(encoded.suffix(maxLength))
+        } else {
+            base = encoded
+        }
+
         let ext = (url.pathExtension.isEmpty ? "img" : url.pathExtension)
-        return dirURL.appendingPathComponent("\(hex).\(ext)")
+        let fileName = "\(base).\(ext)"
+        let fileURL = dirURL.appendingPathComponent(fileName)
+        return fileURL
     }
     
     /// Determines whether a file at the given URL has exceeded the configured TTL based on its modification date.
     private func isExpired(_ url: URL) -> Bool {
-        guard let attrs = try? fileManager.attributesOfItem(atPath: url.path()),
+        guard let attrs = try? fileManager.attributesOfItem(atPath: url.path),
               let mdate = attrs[.modificationDate] as? Date else { return true }
         return Date().timeIntervalSince(mdate) > TimeInterval(config.timeToLive)
     }
